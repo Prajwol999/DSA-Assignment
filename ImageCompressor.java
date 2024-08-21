@@ -1,236 +1,196 @@
-import javax.imageio.IIOImage;
-import javax.imageio.ImageIO;
-import javax.imageio.ImageWriteParam;
-import javax.imageio.ImageWriter;
-import javax.imageio.stream.ImageOutputStream;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
-import java.awt.image.BufferedImage;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.io.File;
 import java.io.IOException;
-import java.util.Iterator;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-public class ImageCompressor {
+public class ImageCompressor extends JFrame {
 
-    private final JFrame frame;
-    private final JProgressBar overallProgressBar;
-    private final JTextArea statusArea;
-    private final JButton startButton;
-    private final JButton cancelButton;
-    private final JFileChooser fileChooser;
-    private File[] selectedFiles;
-    private SwingWorker<Void, ImageConversionProgress> worker;
-    private static final String OUTPUT_DIR = "converted_images/";
-
-    public static void main(String[] args) {
-        EventQueue.invokeLater(() -> {
-            try {
-                ImageCompressor window = new ImageCompressor();
-                window.frame.setVisible(true);
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        });
-    }
+    private JFileChooser fileChooser;
+    private JButton selectFilesButton;
+    private JButton startButton;
+    private JButton cancelButton;
+    private JProgressBar overallProgressBar;
+    private JTextArea statusTextArea;
+    private JCheckBox pdfToDocxCheckBox;
+    private JCheckBox resizeImageCheckBox;
+    private List<File> selectedFiles = new ArrayList<>();
+    private ExecutorService executorService;
 
     public ImageCompressor() {
-        frame = new JFrame();
-        frame.setTitle("Image Converter");
-        frame.setBounds(100, 100, 600, 400);
-        frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        frame.setLayout(new BorderLayout());
+        setTitle("File Converter");
+        setSize(800, 600);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
 
-        JPanel panel = new JPanel();
-        panel.setBorder(new EmptyBorder(10, 10, 10, 10));
-        frame.add(panel, BorderLayout.CENTER);
-        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        // Set modern look and feel
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
 
+        // Initialize components
         fileChooser = new JFileChooser();
         fileChooser.setMultiSelectionEnabled(true);
-        fileChooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("Image Files", "png", "jpg", "jpeg"));
-        JButton selectFilesButton = new JButton("Select Images");
-        selectFilesButton.addActionListener(e -> selectFiles());
-        panel.add(selectFilesButton);
 
-        startButton = new JButton("Start Conversion");
-        startButton.addActionListener(e -> startConversion());
-        panel.add(startButton);
-
+        selectFilesButton = new JButton("Select Files");
+        startButton = new JButton("Start");
         cancelButton = new JButton("Cancel");
-        cancelButton.setEnabled(false);
-        cancelButton.addActionListener(e -> cancelConversion());
-        panel.add(cancelButton);
+        overallProgressBar = new JProgressBar();
+        statusTextArea = new JTextArea();
+        pdfToDocxCheckBox = new JCheckBox("PDF to DOCX");
+        resizeImageCheckBox = new JCheckBox("Resize Image");
 
-        overallProgressBar = new JProgressBar(0, 100);
+        // Style components
         overallProgressBar.setStringPainted(true);
-        panel.add(new JLabel("Overall Progress:"));
-        panel.add(overallProgressBar);
+        statusTextArea.setEditable(false);
+        statusTextArea.setLineWrap(true);
+        statusTextArea.setWrapStyleWord(true);
 
-        statusArea = new JTextArea();
-        statusArea.setEditable(false);
-        panel.add(new JScrollPane(statusArea));
+        // Create and customize panels
+        JPanel topPanel = new JPanel();
+        topPanel.setLayout(new FlowLayout(FlowLayout.CENTER));
+        topPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        topPanel.add(selectFilesButton);
+        topPanel.add(startButton);
+        topPanel.add(cancelButton);
 
-        frame.setVisible(true);
+        JPanel optionsPanel = new JPanel();
+        optionsPanel.setLayout(new GridLayout(2, 1, 10, 10));
+        optionsPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
+        optionsPanel.add(pdfToDocxCheckBox);
+        optionsPanel.add(resizeImageCheckBox);
+
+        JPanel progressPanel = new JPanel();
+        progressPanel.setLayout(new BorderLayout());
+        progressPanel.add(new JScrollPane(statusTextArea), BorderLayout.CENTER);
+        progressPanel.add(overallProgressBar, BorderLayout.SOUTH);
+
+        add(topPanel, BorderLayout.NORTH);
+        add(optionsPanel, BorderLayout.WEST);
+        add(progressPanel, BorderLayout.CENTER);
+
+        // Add action listeners
+        selectFilesButton.addActionListener(new SelectFilesAction());
+        startButton.addActionListener(new StartConversionAction());
+        cancelButton.addActionListener(new CancelAction());
+
+        // Initialize ExecutorService
+        executorService = Executors.newFixedThreadPool(4); // Adjust the number of threads as needed
     }
 
-    private void selectFiles() {
-        int returnValue = fileChooser.showOpenDialog(frame);
-        if (returnValue == JFileChooser.APPROVE_OPTION) {
-            selectedFiles = fileChooser.getSelectedFiles();
-            statusArea.append("Selected images:\n");
+    private class SelectFilesAction implements ActionListener {
+        @Override
+        public void actionPerformed(ActionEvent e) {
+            int returnValue = fileChooser.showOpenDialog(ImageCompressor.this);
+            if (returnValue == JFileChooser.APPROVE_OPTION) {
+                File[] files = fileChooser.getSelectedFiles();
+                selectedFiles.clear(); // Clear previous selections
+                for (File file : files) {
+                    selectedFiles.add(file);
+                }
+                statusTextArea.append("Selected files:\n");
+                for (File file : selectedFiles) {
+                    statusTextArea.append(" - " + file.getName() + "\n");
+                }
+            }
+        }
+    }
+
+    private class StartConversionAction implements ActionListener {
+        @Override
+        public void actionPerformed(ActionEvent e) {
+            if (selectedFiles.isEmpty()) {
+                JOptionPane.showMessageDialog(ImageCompressor.this, "No files selected.", "Error", JOptionPane.ERROR_MESSAGE);
+                return;
+            }
+
+            overallProgressBar.setMaximum(selectedFiles.size());
+            overallProgressBar.setValue(0);
+
             for (File file : selectedFiles) {
-                statusArea.append(file.getAbsolutePath() + "\n");
+                startConversion(file);
             }
-        } else {
-            statusArea.append("No files selected.\n");
-        }
-    }
-
-
-    private void startConversion() {
-        if (selectedFiles == null || selectedFiles.length == 0) {
-            JOptionPane.showMessageDialog(frame, "No images selected!", "Error", JOptionPane.ERROR_MESSAGE);
-            return;
         }
 
-        startButton.setEnabled(false);
-        cancelButton.setEnabled(true);
-        overallProgressBar.setValue(0);
-        statusArea.append("Starting conversion...\n");
+        private void startConversion(File file) {
+            SwingWorker<Void, String> worker = new SwingWorker<>() {
+                @Override
+                protected Void doInBackground() throws Exception {
+                    // Determine the type of conversion selected
+                    String conversionType = pdfToDocxCheckBox.isSelected() ? "PDF to DOCX" : resizeImageCheckBox.isSelected() ? "Resize Image" : "Unknown";
 
-        new File(OUTPUT_DIR).mkdirs();
-
-        worker = new SwingWorker<>() {
-            @Override
-            protected Void doInBackground() throws Exception {
-                int totalFiles = selectedFiles.length;
-                for (int i = 0; i < totalFiles; i++) {
-                    if (isCancelled()) {
-                        return null;
+                    // Specify the output directory as the Downloads folder
+                    File outputDir = new File(System.getProperty("user.home"), "Downloads");
+                    if (!outputDir.exists()) {
+                        outputDir.mkdir(); // Create the directory if it doesn't exist
                     }
 
-                    File file = selectedFiles[i];
-                    publish(new ImageConversionProgress(file.getName(), i + 1, totalFiles, "Processing"));
+                    // Create the output file in the Downloads directory
+                    File outputFile = new File(outputDir, "converted_" + file.getName());
 
+                    // Simulate the conversion process
+                    for (int i = 0; i < 100; i++) {
+                        if (isCancelled()) {
+                            break;
+                        }
+                        Thread.sleep(50); // Simulate time-consuming task
+                        publish(file.getName() + ": " + conversionType + " - " + i + "% complete");
+                        setProgress(i + 1);
+                    }
+
+                    // Copy the file to the output file as a simulation of conversion
                     try {
-                        // Compress and save the image
-                        compressImage(file);
-                        publish(new ImageConversionProgress(file.getName(), i + 1, totalFiles, "Completed"));
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        publish(new ImageConversionProgress(file.getName(), i + 1, totalFiles, "Error"));
+                        Files.copy(file.toPath(), outputFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                        publish("Saved converted file: " + outputFile.getName());
+                    } catch (IOException ex) {
+                        publish("Failed to save file: " + outputFile.getName());
                     }
 
-                    int progress = (int) (((i + 1) / (double) totalFiles) * 100);
-                    setProgress(progress);
+                    return null;
                 }
-                return null;
-            }
 
-            @Override
-            protected void process(List<ImageConversionProgress> chunks) {
-                for (ImageConversionProgress progress : chunks) {
-                    statusArea.append(String.format("Image: %s, %s\n", progress.fileName, progress.status));
+                @Override
+                protected void process(List<String> chunks) {
+                    for (String chunk : chunks) {
+                        statusTextArea.append(chunk + "\n");
+                    }
                 }
-                overallProgressBar.setValue(getProgress());
-            }
 
-            @Override
-            protected void done() {
-                try {
-                    get(); // Ensure that any exception during processing is thrown
-                    statusArea.append("All conversions completed.\n");
-                } catch (InterruptedException e) {
-                    statusArea.append("Conversion interrupted.\n");
-                    e.printStackTrace();
-                } catch (ExecutionException e) {
-                    statusArea.append("Conversion failed.\n");
-                    e.getCause().printStackTrace();
-                } finally {
-                    startButton.setEnabled(true);
-                    cancelButton.setEnabled(false);
+                @Override
+                protected void done() {
+                    overallProgressBar.setValue(overallProgressBar.getValue() + 1);
+                    if (overallProgressBar.getValue() == overallProgressBar.getMaximum()) {
+                        JOptionPane.showMessageDialog(ImageCompressor.this, "All conversions completed!", "Complete", JOptionPane.INFORMATION_MESSAGE);
+                    }
                 }
-            }
-        };
+            };
 
-        worker.addPropertyChangeListener(evt -> {
-            if ("progress".equals(evt.getPropertyName())) {
-                overallProgressBar.setValue((Integer) evt.getNewValue());
-            }
+            executorService.submit(worker);
+        }
+    }
+
+    private class CancelAction implements ActionListener {
+        @Override
+        public void actionPerformed(ActionEvent e) {
+            executorService.shutdownNow();
+            statusTextArea.append("Conversion process cancelled.\n");
+        }
+    }
+
+    public static void main(String[] args) {
+        SwingUtilities.invokeLater(() -> {
+            ImageCompressor app = new ImageCompressor();
+            app.setVisible(true);
         });
-
-        worker.execute();
-    }
-
-    private void cancelConversion() {
-        if (worker != null) {
-            worker.cancel(true);
-            statusArea.append("Conversion cancelled.\n");
-        }
-        startButton.setEnabled(true);
-        cancelButton.setEnabled(false);
-    }
-
-
-
-    private void compressImage(File inputFile) throws IOException {
-        if (!inputFile.exists()) {
-            throw new IOException("File does not exist: " + inputFile.getAbsolutePath());
-        }
-
-        // Check if the file has a supported extension
-        String fileName = inputFile.getName().toLowerCase();
-        if (!fileName.endsWith(".jpg") && !fileName.endsWith(".jpeg")) {
-            throw new IOException("Unsupported file format: " + fileName);
-        }
-
-        try {
-            BufferedImage inputImage = ImageIO.read(inputFile);
-            if (inputImage == null) {
-                throw new IOException("Failed to load image: " + fileName);
-            }
-
-            Iterator<ImageWriter> writers = ImageIO.getImageWritersByFormatName("jpg");
-            if (!writers.hasNext()) {
-                throw new IOException("No writers found for jpg format");
-            }
-            ImageWriter writer = writers.next();
-
-            // Ensure the output file has the correct extension
-            String outputFileName = fileName.endsWith(".jpg") ? fileName : fileName.replace(".jpeg", ".jpg");
-            File outputFile = new File(OUTPUT_DIR + outputFileName);
-            ImageOutputStream outputStream = ImageIO.createImageOutputStream(outputFile);
-            writer.setOutput(outputStream);
-
-            ImageWriteParam params = writer.getDefaultWriteParam();
-            params.setCompressionMode(ImageWriteParam.MODE_EXPLICIT);
-            params.setCompressionQuality(0.5f); // Adjust the quality level as needed
-
-            writer.write(null, new IIOImage(inputImage, null, null), params);
-
-            outputStream.close();
-            writer.dispose();
-        } catch (IOException e) {
-            statusArea.append("Error compressing image: " + inputFile.getName() + "\n");
-            e.printStackTrace(); // Print the stack trace for debugging
-            throw e; // Rethrow to let the SwingWorker handle it
-        }
-    }
-
-    private static class ImageConversionProgress {
-        String fileName;
-        int currentFile;
-        int totalFiles;
-        String status;
-
-        ImageConversionProgress(String fileName, int currentFile, int totalFiles, String status) {
-            this.fileName = fileName;
-            this.currentFile = currentFile;
-            this.totalFiles = totalFiles;
-            this.status = status;
-        }
     }
 }
